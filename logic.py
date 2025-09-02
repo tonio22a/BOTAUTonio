@@ -3,6 +3,8 @@ from datetime import datetime
 from config import DATABASE 
 import os
 import cv2
+from threading import Timer
+import asyncio
 
 class DatabaseManager:
     def __init__(self, database):
@@ -103,12 +105,102 @@ class DatabaseManager:
             cur.execute('''
             SELECT users.user_name, COUNT(winners.prize_id) as count_prize
             FROM winners
-            INNER JOIN users on users.user_id = winner.user_id
+            INNER JOIN users on users.user_id = winners.user_id
             GROUP BY winners.user_id
-            ORDEY BY count_prize
+            ORDER BY count_prize DESC
             LIMIT 10
             ''')
             return cur.fetchall()
+        
+    def get_user_prizes(self, user_id):
+        """Получить все призы пользователя (полученные и неполученные)"""
+        conn = sqlite3.connect(self.database)
+        with conn:
+            cur = conn.cursor()
+            # Полученные призы
+            cur.execute(''' 
+                SELECT p.prize_id, p.image, 1 as obtained 
+                FROM winners w
+                INNER JOIN prizes p ON w.prize_id = p.prize_id
+                WHERE w.user_id = ?
+            ''', (user_id, ))
+            obtained_prizes = cur.fetchall()
+            
+            # Все призы
+            cur.execute('SELECT prize_id, image FROM prizes')
+            all_prizes = cur.fetchall()
+            
+            # Создаем список всех призов с отметкой о получении
+            user_prizes = []
+            for prize_id, image in all_prizes:
+                obtained = any(p[0] == prize_id for p in obtained_prizes)
+                user_prizes.append((prize_id, image, obtained))
+            
+            return user_prizes
+        
+    def add_bid(self, user_id, prize_id, amount):
+        conn = sqlite3.connect(self.database)
+        with conn:
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS bids (
+                    bid_id INTEGER PRIMARY KEY,
+                    user_id INTEGER,
+                    prize_id INTEGER,
+                    amount REAL,
+                    bid_time TEXT,
+                    FOREIGN KEY(user_id) REFERENCES users(user_id),
+                    FOREIGN KEY(prize_id) REFERENCES prizes(prize_id)
+                )
+            ''')
+            conn.execute('INSERT INTO bids (user_id, prize_id, amount, bid_time) VALUES (?, ?, ?, ?)',
+                        (user_id, prize_id, amount, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+            conn.commit()
+
+    def get_highest_bid(self, prize_id):
+        conn = sqlite3.connect(self.database)
+        cur = conn.cursor()
+        cur.execute('SELECT MAX(amount) FROM bids WHERE prize_id = ?', (prize_id,))
+        result = cur.fetchone()[0]
+        return result if result else 0
+
+    def get_highest_bidder(self, prize_id):
+        conn = sqlite3.connect(self.database)
+        cur = conn.cursor()
+        cur.execute('''
+            SELECT u.user_id, u.user_name, b.amount 
+            FROM bids b
+            JOIN users u ON b.user_id = u.user_id
+            WHERE b.prize_id = ? 
+            ORDER BY b.amount DESC 
+            LIMIT 1
+        ''', (prize_id,))
+        return cur.fetchone()
+
+    def get_user_balance(self, user_id):
+        conn = sqlite3.connect(self.database)
+        with conn:
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS balances (
+                    user_id INTEGER PRIMARY KEY,
+                    balance REAL DEFAULT 1000.0,
+                    FOREIGN KEY(user_id) REFERENCES users(user_id)
+                )
+            ''')
+            conn.execute('INSERT OR IGNORE INTO balances (user_id) VALUES (?)', (user_id,))
+            conn.commit()
+            
+            cur = conn.cursor()
+            cur.execute('SELECT balance FROM balances WHERE user_id = ?', (user_id,))
+            result = cur.fetchone()
+            return result[0] if result else 1000.0
+
+    def update_user_balance(self, user_id, amount):
+        conn = sqlite3.connect(self.database)
+        with conn:
+            conn.execute('UPDATE balances SET balance = balance + ? WHERE user_id = ?', (amount, user_id))
+            conn.commit()
+
+
 
 
 def hide_img(img_name):

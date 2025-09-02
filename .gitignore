@@ -5,3 +5,5 @@ config.py
 data.db
 movie.db
 main.py
+bot 1.py
+logic 1.py
